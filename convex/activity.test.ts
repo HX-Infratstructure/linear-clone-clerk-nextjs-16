@@ -3,34 +3,18 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import schema from "./schema";
+import { testingSubtasksOf } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
-
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 
 type Row = { type: string; field?: string; oldValue?: string; newValue?: string; actorId: string };
 
 async function setup() {
   const t = convexTest(schema, modules);
-  const ids = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+  const { orgId, ...ids } = await t.run(async (ctx) => {
+    const { memberId, orgId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", { orgId, name: "Citadel", key: "HXT", nextIssueNumber: 1 });
     const projectA = await ctx.db.insert("projects", { orgId, name: "A", status: "planned" });
     const projectB = await ctx.db.insert("projects", { orgId, name: "B", status: "planned" });
@@ -42,9 +26,9 @@ async function setup() {
       endDate: 1,
     });
     const labelId = await ctx.db.insert("labels", { orgId, name: "backend", color: "#000000" });
-    return { memberId, teamId, projectA, projectB, cycleId, labelId };
+    return { orgId, memberId, teamId, projectA, projectB, cycleId, labelId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
 
   const create = (
     kind: "epic" | "feature" | "story" | "subtask",
@@ -66,14 +50,7 @@ async function setup() {
       }));
     });
 
-  const testingSubtask = async (storyId: Id<"issues">) =>
-    (await t.run(async (ctx) => {
-      const { orgId } = (await ctx.db.get(storyId))!;
-      return await ctx.db
-        .query("issues")
-        .withIndex("by_org_and_parent", (q) => q.eq("orgId", orgId).eq("parentIssueId", storyId))
-        .collect();
-    })).find((issue) => issue.testing)!;
+  const testingSubtask = async (storyId: Id<"issues">) => (await testingSubtasksOf({ t, orgId }, storyId))[0];
 
   return { t, asMember, ids, create, rows, testingSubtask };
 }

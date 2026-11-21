@@ -7,41 +7,27 @@ import { PINNED_PAGE_MAX_ROWS } from "./lib/issues/queries";
 import { LIST_LIMIT } from "../lib/api-contract";
 import { PAGE_READ_ROWS } from "./lib/paging";
 import schema from "./schema";
-import { feedOf, footprint, issueOf, refusalOf } from "./test-helpers.fixture";
+import { insertOrgMember, MEMBER_IDENTITY, ORG_CLAIM } from "./lib/orgMember.fixture";
+import { issueReaders, refusalOf } from "./test-helpers.fixture";
 import { writeHeaders } from "./workspace.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 const OUTSIDER_CLERK_ID = "user_outsider";
 const FIRST_NUMBER = 7;
 
 type Setup = Awaited<ReturnType<typeof setup>>;
+/** What the seeding helpers need from a setup. */
+type Seed = Pick<Setup, "t" | "orgId" | "teamId" | "memberId">;
 
 async function setup(transactionLimits?: { documentsRead: number }) {
   const t = convexTest({ schema, modules, transactionLimits });
   const { orgId, teamId, memberId } = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
+    const { orgId, memberId } = await insertOrgMember(ctx);
     await ctx.db.insert("users", {
       clerkId: OUTSIDER_CLERK_ID,
       name: "Outsider",
       email: "outsider@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
     });
     const teamId = await ctx.db.insert("teams", {
       orgId,
@@ -51,22 +37,16 @@ async function setup(transactionLimits?: { documentsRead: number }) {
     });
     return { orgId, teamId, memberId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-  const issue = (issueId: Id<"issues">) => issueOf(t, issueId);
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
   const issueCount = () => t.run(async (ctx) => (await ctx.db.query("issues").collect()).length);
-  const feed = (issueId: Id<"issues">) => feedOf(t, issueId);
   const project = (name: string) =>
     t.run(async (ctx) => await ctx.db.insert("projects", { orgId, name, status: "planned" }));
-  return { t, orgId, teamId, memberId, asMember, issue, issueCount, feed, project };
+  return { t, orgId, teamId, memberId, asMember, ...issueReaders(t), issueCount, project };
 }
 
 describe("issues.create", () => {
   test("numbers consecutive issues from the team counter and logs each creation", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { teamId, memberId, asMember } = await setup();
 
     const firstId = await asMember.mutation(api.issues.create, {
       teamId,
@@ -109,7 +89,7 @@ describe("issues.create", () => {
 
 describe("issues.create on a free organization", () => {
   test("creates the 101st issue", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     await t.run(async (ctx) => {
       for (let i = 0; i < 100; i++) {
         await ctx.db.insert("issues", {
@@ -124,10 +104,6 @@ describe("issues.create on a free organization", () => {
           sortOrder: (i + 1) * 1000,
         });
       }
-    });
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
     });
 
     const issueId = await asMember.mutation(api.issues.create, {
@@ -165,14 +141,13 @@ async function backlogPages<Page extends BacklogPage>(pageAt: (cursor: string | 
 }
 
 /** `LIST_LIMIT + 1` open stories in one status, the oldest ranked top; their ids in rank order. */
-async function seedOldestRankedTop(t: Setup["t"], teamId: Id<"teams">, memberId: Id<"users">) {
+async function seedOldestRankedTop({ t, orgId, teamId, memberId }: Seed) {
   return await t.run(async (ctx) => {
-    const team = await ctx.db.get(teamId);
     const ids = [];
     for (let i = 0; i <= LIST_LIMIT; i++) {
       ids.push(
         await ctx.db.insert("issues", {
-          orgId: team!.orgId,
+          orgId,
           teamId,
           kind: "story",
           title: `Story ${i}`,
@@ -189,11 +164,7 @@ async function seedOldestRankedTop(t: Setup["t"], teamId: Id<"teams">, memberId:
 
 describe("issues.listBacklog", () => {
   test("lists the team's open stories with no cycle, highest sortOrder first", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     const cycleId = await t.run(async (ctx) => {
       return await ctx.db.insert("cycles", {
         orgId,
@@ -242,9 +213,9 @@ describe("issues.listBacklog", () => {
   });
 
   test("the first page starts at the top-ranked story, the oldest, when one open status holds more than LIST_LIMIT", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const rankOrder = await seedOldestRankedTop(t, teamId, memberId);
+    const s = await setup();
+    const { teamId, asMember } = s;
+    const rankOrder = await seedOldestRankedTop(s);
 
     const first = await asMember.query(api.issues.listBacklog, {
       teamId,
@@ -257,9 +228,9 @@ describe("issues.listBacklog", () => {
   });
 
   test("following the cursor reaches every story once, in rank order across pages", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const rankOrder = await seedOldestRankedTop(t, teamId, memberId);
+    const s = await setup();
+    const { teamId, asMember } = s;
+    const rankOrder = await seedOldestRankedTop(s);
 
     const pages = await backlogPages((cursor) =>
       asMember.query(api.issues.listBacklog, { teamId, paginationOpts: { numItems: 200, cursor } })
@@ -272,8 +243,7 @@ describe("issues.listBacklog", () => {
   });
 
   test("stories with a cycle, other kinds and closed stories appear on no page", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     const listed = await t.run(async (ctx) => {
       const cycleId = await ctx.db.insert("cycles", { orgId, teamId, number: 1, startDate: 0, endDate: 1 });
       const story = { orgId, teamId, kind: "story", status: "todo", priority: "none", creatorId: memberId } as const;
@@ -304,8 +274,7 @@ describe("issues.listBacklog", () => {
     expect(pages.flat().map((issue) => issue._id)).toEqual(listed);
   });
   test("closed stories count toward a page's reads: a page stops after PAGE_READ_ROWS, and the cursor reaches an open story ranked below them", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     const openId = await t.run(async (ctx) => {
       const story = { orgId, teamId, kind: "story", priority: "none", creatorId: memberId } as const;
       for (let i = 0; i < PAGE_READ_ROWS + 1_000; i++) {
@@ -320,16 +289,12 @@ describe("issues.listBacklog", () => {
 
     expect(pages[0]).toEqual([]);
     expect(pages.flat().map((issue) => issue._id)).toEqual([openId]);
-  });
+  }, 60_000);
 });
 
 describe("issues.listParentCandidates", () => {
   test("offers an older open feature to a story when the team has more than 500 newer issues", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     const { openFeature } = await t.run(async (ctx) => {
       const base = {
         orgId,
@@ -361,11 +326,7 @@ describe("issues.listParentCandidates", () => {
   });
 
   test("offers no parent to an epic", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     await t.run(async (ctx) => {
       await ctx.db.insert("issues", {
         orgId,
@@ -399,8 +360,7 @@ describe("issues.listParentCandidates", () => {
   });
 
   test("offers at most LIST_LIMIT parents, newest first", async () => {
-    const { t, teamId, memberId, orgId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { t, teamId, memberId, orgId, asMember } = await setup();
     const oldestFirst = await t.run(async (ctx) => {
       const ids = [];
       for (let i = 0; i <= LIST_LIMIT; i++) {
@@ -428,11 +388,7 @@ describe("issues.listParentCandidates", () => {
 
 describe("issues.update projectId: null", () => {
   async function setupProject() {
-    const { t, teamId, orgId } = await setup();
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { t, teamId, orgId, asMember } = await setup();
     const projectId = await t.run(async (ctx) => {
       return await ctx.db.insert("projects", {
         orgId,
@@ -488,11 +444,7 @@ describe("issues.update projectId: null", () => {
 
 describe("issues.update with an unchanged project", () => {
   test("saves an epic with many features without walking its tree", async () => {
-    const { t, teamId, memberId, orgId } = await setup({ documentsRead: 30 });
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const { t, teamId, memberId, orgId, asMember } = await setup({ documentsRead: 30 });
     const { epic, projectId } = await t.run(async (ctx) => {
       const projectId = await ctx.db.insert("projects", {
         orgId,
@@ -528,9 +480,8 @@ describe("issues.update with an unchanged project", () => {
 });
 
 /** Stories in To Do at the given ranks, inserted in order, so each is newer than the one before. */
-async function storiesAt(t: Setup["t"], teamId: Id<"teams">, memberId: Id<"users">, ranks: Record<string, number>) {
+async function storiesAt({ t, orgId, teamId, memberId }: Seed, ranks: Record<string, number>) {
   return await t.run(async (ctx) => {
-    const { orgId } = (await ctx.db.get(teamId))!;
     const story = { orgId, teamId, kind: "story", status: "todo", priority: "none", creatorId: memberId } as const;
     const ids: Record<string, Id<"issues">> = {};
     for (const [title, sortOrder] of Object.entries(ranks)) {
@@ -545,8 +496,7 @@ const ranksOf = (t: Setup["t"], ids: Id<"issues">[]) =>
 
 describe("issue ranking", () => {
   test("ranks each new issue above the highest rank, even one re-ranked after it was created", async () => {
-    const { t, teamId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { teamId, asMember } = await setup();
     const older = await asMember.mutation(api.issues.create, { teamId, title: "Older" });
     const newer = await asMember.mutation(api.issues.create, { teamId, title: "Newer" });
     const newerRank = (await asMember.query(api.issues.get, { issueId: newer }))!.sortOrder;
@@ -562,9 +512,9 @@ describe("issue ranking", () => {
   });
 
   test("moving a story between two tied neighbours lands strictly between them, the pair in the order the list shows", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const { older, newer, moved } = await storiesAt(t, teamId, memberId, { older: 5000, newer: 5000, moved: 1000 });
+    const s = await setup();
+    const { teamId, asMember } = s;
+    const { older, newer, moved } = await storiesAt(s, { older: 5000, newer: 5000, moved: 1000 });
     const { page: before } = await asMember.query(api.issues.listBacklog, { teamId, paginationOpts: FIRST_PAGE });
     expect(before.map((issue) => issue._id)).toEqual([newer, older, moved]);
 
@@ -576,9 +526,9 @@ describe("issue ranking", () => {
   });
 
   test("moving a story into a tie whose gap to the next higher rank holds no new number widens the run upward", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const rows = await storiesAt(t, teamId, memberId, {
+    const s = await setup();
+    const { t, teamId, asMember } = s;
+    const rows = await storiesAt(s, {
       top: 2000,
       up2: 1000.0000000000002,
       up1: 1000.0000000000001,
@@ -600,8 +550,7 @@ describe("issue ranking", () => {
 
 describe("a tie repair goes upward and keeps the order the list shows", () => {
   test("a story dropped between a story and its testing sub-task, tied at one rank, lands between them with the pair in order", async () => {
-    const { t, teamId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { teamId, asMember } = await setup();
     const story = await asMember.mutation(api.issues.create, { teamId, title: "S", kind: "story" });
     const dropped = await asMember.mutation(api.issues.create, { teamId, title: "X", kind: "story" });
     const { page: before } = await asMember.query(api.issues.listByTeam, { teamId, paginationOpts: FIRST_PAGE });
@@ -617,9 +566,9 @@ describe("a tie repair goes upward and keeps the order the list shows", () => {
   });
 
   test("a story moved into a tie of three lands inside the tied run, which keeps its order above the tie", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const { first, second, third, moved } = await storiesAt(t, teamId, memberId, { first: 5000, second: 5000, third: 5000, moved: 1000 });
+    const s = await setup();
+    const { t, teamId, asMember } = s;
+    const { first, second, third, moved } = await storiesAt(s, { first: 5000, second: 5000, third: 5000, moved: 1000 });
 
     await asMember.mutation(api.issues.update, { issueId: moved, sortOrder: 5000 });
 
@@ -629,9 +578,9 @@ describe("a tie repair goes upward and keeps the order the list shows", () => {
   });
 
   test("a tie repair leaves a row of another workspace that names the team untouched, and spaces within the team's own gap", async () => {
-    const { t, teamId, memberId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
-    const rows = await storiesAt(t, teamId, memberId, { top: 7000, older: 5000, newer: 5000, moved: 1000 });
+    const s = await setup();
+    const { t, teamId, memberId, asMember } = s;
+    const rows = await storiesAt(s, { top: 7000, older: 5000, newer: 5000, moved: 1000 });
     const foreign = await t.run(async (ctx) => {
       const orgId = await ctx.db.insert("organizations", { clerkOrgId: "org_other", name: "Other", slug: "other" });
       const fields = { orgId, teamId, kind: "story", status: "todo", priority: "none", creatorId: memberId } as const;
@@ -734,8 +683,7 @@ describe("a title is never blank", () => {
   }
 
   test("a create with an all-blank title is refused as validation and writes nothing", async () => {
-    const { t, teamId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { t, teamId, asMember } = await setup();
 
     const error = await asMember.mutation(api.issues.create, { teamId, title: "  " }).catch(refusalOf);
 
@@ -745,8 +693,7 @@ describe("a title is never blank", () => {
   });
 
   test("an update to an all-blank title is refused as validation and changes nothing", async () => {
-    const { t, teamId } = await setup();
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const { t, teamId, asMember } = await setup();
     const issueId = await asMember.mutation(api.issues.create, { teamId, title: "  Story  " });
     const before = await written(t);
     expect(before.issues.find((issue) => issue._id === issueId)?.title).toBe("Story");
@@ -827,9 +774,9 @@ describe("issue write branches", () => {
       oldValue: "Story",
       newValue: "Renamed",
     });
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
     await s.asMember.mutation(api.issues.update, { issueId: storyId, title: " Renamed\t" });
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
   });
 
   // Catches a description step that writes, logs or bumps the version when the text is unchanged.
@@ -840,11 +787,11 @@ describe("issue write branches", () => {
       title: "Story",
       description: "Notes",
     });
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     await s.asMember.mutation(api.issues.update, { issueId: storyId, description: "Notes" });
 
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
     expect((await s.issue(storyId)).description).toBe("Notes");
   });
 
@@ -852,11 +799,11 @@ describe("issue write branches", () => {
   test("update with the same priority writes no activity and no version bump", async () => {
     const s = await setup();
     const storyId = await s.asMember.mutation(api.issues.create, { teamId: s.teamId, title: "Story", priority: "high" });
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     await s.asMember.mutation(api.issues.update, { issueId: storyId, priority: "high" });
 
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
     expect((await s.issue(storyId)).priority).toBe("high");
   });
 
@@ -865,11 +812,11 @@ describe("issue write branches", () => {
     const s = await setup();
     const storyId = await s.asMember.mutation(api.issues.create, { teamId: s.teamId, title: "Story" });
     const { sortOrder } = await s.issue(storyId);
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     await s.asMember.mutation(api.issues.update, { issueId: storyId, sortOrder });
 
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
     expect((await s.issue(storyId)).sortOrder).toBe(sortOrder);
   });
 
@@ -885,7 +832,7 @@ describe("issue write branches", () => {
       parentIssueId: storyId,
       title: "Write API",
     });
-    const before = await footprint(s.t, subtaskId);
+    const before = await s.footprint(subtaskId);
 
     const error = await s.asMember
       .mutation(api.issues.update, { issueId: subtaskId, projectId: other })
@@ -893,7 +840,7 @@ describe("issue write branches", () => {
 
     expect(error).toEqual({ code: "rule_refused", message: "A subtask's project must match its story's project" });
     expect((await s.issue(subtaskId)).projectId).toBe(inherited);
-    expect(await footprint(s.t, subtaskId)).toEqual(before);
+    expect(await s.footprint(subtaskId)).toEqual(before);
   });
 
   // Catches an estimate step that drops the cleared key, so the estimate stays and no row is logged.

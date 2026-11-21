@@ -87,11 +87,13 @@ Run the checks in the order the README's [Commands](README.md#commands) section 
 - A test of a `convex/lib` helper can sit next to the helper, as `convex/lib/mirror.test.ts` does. Zone 1 of `import/no-restricted-paths` in `eslint.config.mjs` limits what a `convex/lib` file can import from top-level `convex/`. A helper test that imports a top-level file that zone 1 forbids, such as `convex/workspace.fixture.ts`, sits at `convex/` top level, as `convex/idempotency.test.ts` does.
 - These shared helper files hold test helpers for more than one test file:
   - `convex/workspace.fixture.ts`, the HX workspace that every new agent-API test takes;
-  - `convex/test-helpers.fixture.ts`, the readers for refusals, issues and activity rows that top-level Convex tests share;
+  - `convex/lib/orgMember.fixture.ts`, the test organization and its one member (`insertOrgMember`, `MEMBER_IDENTITY`). Top-level and `convex/lib` tests both use it. It sits in `convex/lib` because zone 1 forbids a `convex/lib` test from importing a top-level fixture;
+  - `convex/test-helpers.fixture.ts`, the helpers that top-level Convex tests share: the readers (`issueReaders`, `footprint`, `refusalOf`), the reader of a story's testing sub-task, the helper that passes a story's done gate (`passDoneGate`), the switch back to real timers after each test (`registerRealTimers`) and the `Test` type;
   - `lib/seeded-random.fixture.ts`, the seeded random generator for property tests;
   - `components/fake-local-store.ts`, a test double of Convex's `OptimisticLocalStore`.
-- A new helper that a second test file needs goes into a shared helper file that every test that uses it can import. Don't copy it. Under `convex/`, name a new shared helper file `<name>.fixture.ts`, so Convex doesn't deploy it as a function module.
-- Some setup code is still copied between Convex tests, such as the organization and member setup and the `asMember` identities. Moving it into a shared helper file is a known follow-up.
+- A helper that a second test file needs goes into a shared helper file that every test that uses it can import. Don't copy it.
+- Under `convex/`, name a new shared helper file `<name>.fixture.ts`, so Convex doesn't deploy it as a function module.
+- `convex/teams.test.ts` keeps its own admin identity, and `convex/revert.test.ts` keeps its own seed rows. Other tests still copy the organization and member setup, such as `convex/lib/customFunctions.test.ts`, `convex/issueVersion.test.ts` and `components/views/filters.test.ts`. Moving those copies into a shared helper file is a known follow-up. `components/views/filters.test.ts` can't use `convex/lib/orgMember.fixture.ts`, because zone 2 of `import/no-restricted-paths` in `eslint.config.mjs` forbids a `components/` file from importing `convex/lib`. Moving its copy needs a fixture outside `convex/lib`.
 
 ## Reference
 

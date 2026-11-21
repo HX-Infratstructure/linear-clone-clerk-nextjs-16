@@ -3,6 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import { LIST_LIMIT } from "../lib/api-contract";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import { CASCADE_BUDGET } from "./lib/orgRows";
 import schema from "./schema";
 
@@ -13,21 +14,17 @@ vi.mock("./lib/orgRows", async (importOriginal) => {
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG = "org_hx";
-const MEMBER = "user_member";
 const DAY = 86_400_000;
 
 async function setup(transactionLimits?: { documentsRead: number }) {
   const t = convexTest({ schema, modules, transactionLimits });
   const ids = await t.run(async (ctx) => {
-    const orgId = await ctx.db.insert("organizations", { clerkOrgId: ORG, name: "HX", slug: "hx" });
-    const userId = await ctx.db.insert("users", { clerkId: MEMBER, name: "Member", email: "member@example.com" });
-    await ctx.db.insert("members", { orgId, userId, role: "member", clerkMembershipId: "mem_member" });
+    const { orgId, memberId: userId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", { orgId, name: "Engineering", key: "ENG", nextIssueNumber: 1 });
     const cycleId = await ctx.db.insert("cycles", { orgId, teamId, number: 1, startDate: 0, endDate: Date.now() + DAY });
     return { orgId, userId, teamId, cycleId };
   });
-  return { t, member: t.withIdentity({ subject: MEMBER, org_id: ORG }), ...ids };
+  return { t, member: t.withIdentity(MEMBER_IDENTITY), ...ids };
 }
 
 describe("cycle dates", () => {

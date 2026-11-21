@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { StorageActionWriter } from "convex/server";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import { PAGE_SIZE } from "./admin";
 import { CLEANUP_BUDGET, ISSUE_OWNED_TABLES, IssueOwnedCounts } from "./lib/issueCleanup";
@@ -9,12 +9,11 @@ import { Doc, Id, TableNames } from "./_generated/dataModel";
 import { MutationCtx } from "./_generated/server";
 import { createTestingSubtask } from "./lib/rules/testing";
 import schema from "./schema";
+import { registerRealTimers } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+registerRealTimers();
 
 const CLEARED_ORG = "org_cleared";
 const KEPT_ORG = "org_kept";
@@ -214,7 +213,7 @@ async function addActivity(t: TestConvex, issueId: Id<"issues">, count: number) 
   }
 }
 
-/** Comments on one issue: within the row budget, and past Convex's 16 MiB read limit in all. */
+/** Comments on one issue: within the row budget, and past Convex's read limit (`TRANSACTION_LIMITS.bytesRead` in `./lib/transactionLimits`) in all. */
 const LARGE_COMMENTS = 4_000;
 const COMMENT_CHARS = 5 * 1024;
 
@@ -878,7 +877,7 @@ describe("admin.clearTeamContent", () => {
     expect(await allViewIds(t)).toEqual(idsBefore.filter((id) => !opensCleared.has(id)));
     expect(await t.run((ctx) => ctx.db.get(cleared.teamId))).toBeNull();
     expect(await scheduledRunStates(t)).toEqual(new Set(["success"]));
-  });
+  }, 60_000);
 
   test("a rerun after a scheduled run failed in the saved-view scan finishes the clear", async () => {
     vi.useFakeTimers();

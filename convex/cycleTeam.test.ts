@@ -3,33 +3,17 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 const REFUSED = /^Sprint A belongs to team OPS; pick a cycle from team ENG$/;
 
 async function setup() {
   const t = convexTest(schema, modules);
   const ids = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+    const { orgId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", { orgId, name: "Engineering", key: "ENG", nextIssueNumber: 1 });
     const otherTeamId = await ctx.db.insert("teams", { orgId, name: "Operations", key: "OPS", nextIssueNumber: 1 });
     const otherOrgId = await ctx.db.insert("organizations", {
@@ -60,7 +44,7 @@ async function setup() {
     });
     return { teamId, ownCycleId, otherCycleId, foreignCycleId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
   const cycleOf = (issueId: Id<"issues">) =>
     t.run(async (ctx) => (await ctx.db.get(issueId))?.cycleId ?? null);
   return { asMember, cycleOf, ...ids };

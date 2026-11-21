@@ -2,20 +2,16 @@
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.*s");
-
-const ORG = "org_hx";
-const MEMBER = "user_member";
 
 /** Two teams in our workspace with a "Board" issue each, and another workspace's "Board" issue that points at ENG. */
 async function setup() {
   const t = convexTest(schema, modules);
   const ids = await t.run(async (ctx) => {
-    const orgId = await ctx.db.insert("organizations", { clerkOrgId: ORG, name: "HX", slug: "hx" });
-    const userId = await ctx.db.insert("users", { clerkId: MEMBER, name: "Member", email: "member@example.com" });
-    await ctx.db.insert("members", { orgId, userId, role: "member", clerkMembershipId: "mem_member" });
+    const { orgId, memberId: userId } = await insertOrgMember(ctx);
     const engId = await ctx.db.insert("teams", { orgId, name: "Engineering", key: "ENG", nextIssueNumber: 2 });
     const opsId = await ctx.db.insert("teams", { orgId, name: "Operations", key: "OPS", nextIssueNumber: 2 });
     // convex-test 0.0.54 throws on a search-index row without its search field, so each issue has a description.
@@ -26,7 +22,7 @@ async function setup() {
     await ctx.db.insert("issues", { ...issue, orgId: otherOrgId, teamId: engId, title: "Board foreign" });
     return { engId, engIssueId, opsIssueId };
   });
-  return { ...ids, member: t.withIdentity({ subject: MEMBER, org_id: ORG }) };
+  return { ...ids, member: t.withIdentity(MEMBER_IDENTITY) };
 }
 
 describe("search.issues", () => {

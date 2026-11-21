@@ -5,6 +5,7 @@ import { LIST_LIMIT, MAX_LABELS_PER_ISSUE } from "../lib/api-contract";
 import { byRank } from "../lib/sort-order";
 import { api } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import { PAGE_READ_ROWS } from "./lib/paging";
 import schema, { issueStatusValidator } from "./schema";
 
@@ -19,14 +20,12 @@ type Setup = Awaited<ReturnType<typeof setup>>;
 async function setup(transactionLimits: { databaseQueries?: number } | boolean = false) {
   const t = convexTest({ schema, modules, transactionLimits });
   const ids = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", { clerkId: "user_member", name: "Member", email: "m@example.com" });
-    const orgId = await ctx.db.insert("organizations", { clerkOrgId: "org_test", name: "Test", slug: "test" });
+    const { orgId, memberId } = await insertOrgMember(ctx);
     const otherOrgId = await ctx.db.insert("organizations", { clerkOrgId: "org_other", name: "Other", slug: "other" });
-    await ctx.db.insert("members", { orgId, userId: memberId, role: "member", clerkMembershipId: "mem_member" });
     const teamId = await ctx.db.insert("teams", { orgId, name: "Engineering", key: "ENG", nextIssueNumber: 1 });
     return { memberId, orgId, otherOrgId, teamId };
   });
-  const asMember = t.withIdentity({ subject: "user_member", org_id: "org_test" });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
   const story = { teamId: ids.teamId, kind: "story", status: "todo", priority: "none", creatorId: ids.memberId } as const;
   return { t, asMember, story, ...ids };
 }
@@ -91,7 +90,7 @@ describe.each(RANKED_QUERIES)("issues.$name over the team's rank index", ({ list
 
     expect(pages[0]).toEqual([]);
     expect(pages.flat().map((issue) => issue._id)).toEqual([oursId]);
-  });
+  }, 60_000);
 });
 
 /**

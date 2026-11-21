@@ -3,36 +3,19 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import schema from "./schema";
+import { PROOF_URL, testingSubtasksOf } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
-
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
-const PROOF = "https://ci.example.com/run/1";
 
 type Kind = "epic" | "feature" | "story" | "subtask";
 type Status = Doc<"issues">["status"];
 
 async function setup() {
   const t = convexTest(schema, modules);
-  const { teamId, projectId } = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+  const { orgId, teamId, projectId } = await t.run(async (ctx) => {
+    const { orgId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", {
       orgId,
       name: "Engineering",
@@ -44,9 +27,9 @@ async function setup() {
       name: "Phase 2",
       status: "planned",
     });
-    return { teamId, projectId };
+    return { orgId, teamId, projectId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
 
   const create = (kind: Kind, title: string, parentIssueId?: Id<"issues">) =>
     asMember.mutation(api.issues.create, {
@@ -58,16 +41,7 @@ async function setup() {
     });
   const move = (issueId: Id<"issues">, status: Status) =>
     asMember.mutation(api.issues.update, { issueId, status });
-  const testingOf = async (storyId: Id<"issues">) => {
-    const children = await t.run(async (ctx) => {
-      const { orgId } = (await ctx.db.get(storyId))!;
-      return await ctx.db
-        .query("issues")
-        .withIndex("by_org_and_parent", (q) => q.eq("orgId", orgId).eq("parentIssueId", storyId))
-        .collect();
-    });
-    return children.find((child) => child.testing)!._id;
-  };
+  const testingOf = async (storyId: Id<"issues">) => (await testingSubtasksOf({ t, orgId }, storyId))[0]._id;
   const setProof = (issueId: Id<"issues">, proofUrl: string) =>
     asMember.mutation(api.issues.setProof, { issueId, proofUrl });
 
@@ -81,11 +55,11 @@ async function setup() {
   const finishStory = async (ids: { story: Id<"issues">; work: Id<"issues">; testing: Id<"issues"> }) => {
     await move(ids.work, "done");
     await move(ids.testing, "done");
-    await setProof(ids.testing, PROOF);
+    await setProof(ids.testing, PROOF_URL);
     await move(ids.story, "done");
   };
 
-  return { t, teamId, create, move, setProof, storyWithWork, finishStory };
+  return { t, orgId, teamId, asMember, create, move, setProof, storyWithWork, finishStory };
 }
 
 const GATED = [
@@ -133,7 +107,7 @@ describe("Done gate: a story", () => {
   test.each(GATED)("with proof and every sub-task done goes to %s", async (_label, status) => {
     const { move, setProof, storyWithWork } = await setup();
     const { story, work, testing } = await storyWithWork();
-    await setProof(testing, PROOF);
+    await setProof(testing, PROOF_URL);
     await move(work, "done");
     await move(testing, "done");
 
@@ -145,7 +119,7 @@ describe("Done gate: a story", () => {
     const { story, work, testing } = await storyWithWork();
     await move(work, "canceled");
     await move(testing, "done");
-    await setProof(testing, PROOF);
+    await setProof(testing, PROOF_URL);
 
     await expect(move(story, "done")).resolves.toBeNull();
   });
@@ -154,7 +128,7 @@ describe("Done gate: a story", () => {
     const { move, setProof, storyWithWork } = await setup();
     const { story, work, testing } = await storyWithWork();
     await move(work, "done");
-    await setProof(testing, PROOF);
+    await setProof(testing, PROOF_URL);
     await move(testing, "canceled");
 
     await expect(move(story, status)).rejects.toThrow(
@@ -213,7 +187,7 @@ describe("Done gate: every status write path", () => {
     ["update (board drag and issue properties)", "update"],
     ["create with a gated status", "create"],
   ] as const)("%s refuses", async (_label, path) => {
-    const { teamId, t, move, storyWithWork } = await setup();
+    const { teamId, asMember, move, storyWithWork } = await setup();
     if (path === "update") {
       const { story } = await storyWithWork();
       await expect(move(story, "done")).rejects.toMatchObject({
@@ -221,7 +195,6 @@ describe("Done gate: every status write path", () => {
       });
       return;
     }
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
     await expect(
       asMember.mutation(api.issues.create, { teamId, title: "Login", status: "done" })
     ).rejects.toThrow("Can't move ENG-1 to Done: open — ENG-1.1 Complete testing (no proof link)");
@@ -252,12 +225,11 @@ describe("Done gate: no new child under a gated parent", () => {
   });
 
   test.each(GATED)("a story can't be moved under a feature in %s", async (label, status) => {
-    const { t, create, move } = await setup();
+    const { asMember, create, move } = await setup();
     const epic = await create("epic", "Accounts");
     const feature = await create("feature", "Sign-in", epic);
     await move(feature, status);
     const story = await create("story", "Login");
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
 
     await expect(
       asMember.mutation(api.issueRelations.setParent, { issueId: story, parentIssueId: feature })
@@ -265,12 +237,11 @@ describe("Done gate: no new child under a gated parent", () => {
   });
 
   test.each(["todo", "in_progress"] as const)("a child can be created and moved under a parent in %s", async (status) => {
-    const { t, create, move } = await setup();
+    const { asMember, create, move } = await setup();
     const epic = await create("epic", "Accounts");
     const feature = await create("feature", "Sign-in", epic);
     await move(feature, status);
     const story = await create("story", "Login");
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
 
     await expect(create("story", "Logout", feature)).resolves.toBeDefined();
     await expect(
@@ -279,18 +250,17 @@ describe("Done gate: no new child under a gated parent", () => {
   });
 
   test("a new story still gets its Complete testing sub-task", async () => {
-    const { t, create } = await setup();
+    const { t, orgId, create } = await setup();
     const epic = await create("epic", "Accounts");
     const feature = await create("feature", "Sign-in", epic);
     const story = await create("story", "Login", feature);
 
-    const children = await t.run(async (ctx) => {
-      const { orgId } = (await ctx.db.get(story))!;
-      return await ctx.db
+    const children = await t.run((ctx) =>
+      ctx.db
         .query("issues")
         .withIndex("by_org_and_parent", (q) => q.eq("orgId", orgId).eq("parentIssueId", story))
-        .collect();
-    });
+        .collect()
+    );
     expect(children.map((child) => [child.title, child.testing])).toEqual([["Complete testing", true]]);
   });
 

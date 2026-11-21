@@ -5,11 +5,9 @@ import { api } from "../_generated/api";
 import { Id } from "../_generated/dataModel";
 import schema from "../schema";
 import { agentClerkId, ensureAgent, normalizeAgentName } from "./agents";
+import { insertOrgMember, MEMBER_CLERK_ID, MEMBER_IDENTITY } from "./orgMember.fixture";
 
 const modules = import.meta.glob("../**/*.*s");
-
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 
 describe("normalizeAgentName", () => {
   test.each([
@@ -39,22 +37,7 @@ describe("agentClerkId", () => {
 async function setup() {
   const t = convexTest(schema, modules);
   const ids = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "cc1",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+    const { memberId, orgId } = await insertOrgMember(ctx, { name: "cc1" });
     const teamId = await ctx.db.insert("teams", {
       orgId,
       name: "Engineering",
@@ -114,7 +97,7 @@ describe("one story In Progress per agent", () => {
   test("an agent holding an In Progress story is refused a second, by name", async () => {
     const { t, ensure, teamId } = await setup();
     const agentId = await ensure("cc1");
-    const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+    const asMember = t.withIdentity(MEMBER_IDENTITY);
     const story = (title: string) =>
       asMember.mutation(api.issues.create, { teamId, title, assigneeId: agentId });
     const start = (issueId: Id<"issues">) =>

@@ -8,17 +8,16 @@ import http from "./http";
 import { LIST_LIMIT } from "../lib/api-contract";
 import { parseIssuePath } from "./lib/httpApi";
 import schema from "./schema";
-import { feedOf, footprint, issueOf, refusalOf } from "./test-helpers.fixture";
+import { MEMBER_CLERK_ID, MEMBER_IDENTITY, ORG_CLAIM } from "./lib/orgMember.fixture";
+import { issueReaders, passDoneGate, refusalOf } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
-
-const ORG_CLAIM = "org_test";
 
 async function setup() {
   const t = convexTest(schema, modules);
   const { orgId, teamId, ownerId, memberId } = await t.run(async (ctx) => {
     const ownerId = await ctx.db.insert("users", { clerkId: "user_owner", name: "Owner", email: "o@example.com" });
-    const memberId = await ctx.db.insert("users", { clerkId: "user_member", name: "Member", email: "m@example.com" });
+    const memberId = await ctx.db.insert("users", { clerkId: MEMBER_CLERK_ID, name: "Member", email: "m@example.com" });
     const orgId = await ctx.db.insert("organizations", { clerkOrgId: ORG_CLAIM, name: "Test Org", slug: "test-org" });
     await ctx.db.insert("members", { orgId, userId: ownerId, role: "admin", clerkMembershipId: "mem_owner" });
     await ctx.db.insert("members", { orgId, userId: memberId, role: "member", clerkMembershipId: "mem_member" });
@@ -26,34 +25,16 @@ async function setup() {
     return { orgId, teamId, ownerId, memberId };
   });
   const asOwner = t.withIdentity({ subject: "user_owner", org_id: ORG_CLAIM });
-  const asMember = t.withIdentity({ subject: "user_member", org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
   const story = (title: string, assigneeId?: Id<"users">) =>
     asMember.mutation(api.issues.create, { teamId, title, assigneeId });
-  const issue = (issueId: Id<"issues">) => issueOf(t, issueId);
-  const feed = (issueId: Id<"issues">) => feedOf(t, issueId);
+  const readers = issueReaders(t);
   const lastChange = async (issueId: Id<"issues">, type: string) =>
-    (await feed(issueId)).filter((row) => row.type === type).at(-1)!._id;
+    (await readers.feed(issueId)).filter((row) => row.type === type).at(-1)!._id;
   const revert = (activityId: Id<"activity">) => asOwner.mutation(api.issues.revertChange, { activityId });
   const revertible = async (issueId: Id<"issues">) =>
     (await asOwner.query(api.activity.listByIssue, { issueId })).filter((row) => row.revertible).map((row) => row._id);
-  return { t, asOwner, asMember, orgId, teamId, ownerId, memberId, story, issue, feed, lastChange, revert, revertible };
-}
-
-type Setup = Awaited<ReturnType<typeof setup>>;
-
-async function passDoneGate(s: Setup, storyId: Id<"issues">) {
-  const testing = await s.t.run(async (ctx) => {
-    const { orgId } = (await ctx.db.get(storyId))!;
-    return (
-      await ctx.db
-        .query("issues")
-        .withIndex("by_org_and_parent", (q) => q.eq("orgId", orgId).eq("parentIssueId", storyId))
-        .collect()
-    ).find((child) => child.testing);
-  });
-  await s.asMember.mutation(api.issues.setProof, { issueId: testing!._id, proofUrl: "https://ci.example.com/run/1" });
-  await s.asMember.mutation(api.issues.update, { issueId: testing!._id, status: "done" });
-  return testing!._id;
+  return { t, asOwner, asMember, orgId, teamId, ownerId, memberId, story, ...readers, lastChange, revert, revertible };
 }
 
 describe("owner revert from the activity log", () => {
@@ -111,7 +92,7 @@ describe("owner revert from the activity log", () => {
     await s.asMember.mutation(api.issues.update, { issueId: storyId, priority: "low" });
     const earlier = await s.lastChange(storyId, "priority_changed");
     await s.asMember.mutation(api.issues.update, { issueId: storyId, priority: "high" });
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     const error = await s.revert(earlier).catch(refusalOf);
 
@@ -120,7 +101,7 @@ describe("owner revert from the activity log", () => {
       message: "ENG-1 priority has changed since; revert the latest change instead",
     });
     expect((await s.issue(storyId)).priority).toBe("high");
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
   });
 
   test("a sub-task's field that changed since is refused, naming the sub-task by its key", async () => {
@@ -356,13 +337,13 @@ describe("owner revert from the activity log", () => {
         newValue: "none",
       })
     );
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     const error = await s.revert(activityId).catch(refusalOf);
 
     expect(error).toEqual({ code: "rule_refused", message: "Unknown value not-a-priority" });
     expect((await s.issue(storyId)).priority).toBe("none");
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
   });
 
   // Catches a revert that checks only "newest for its field" and overwrites a value changed without a logged row.
@@ -372,7 +353,7 @@ describe("owner revert from the activity log", () => {
     await s.asMember.mutation(api.issues.update, { issueId: storyId, priority: "low" });
     const newest = await s.lastChange(storyId, "priority_changed");
     await s.t.run((ctx) => ctx.db.patch(storyId, { priority: "high" }));
-    const before = await footprint(s.t, storyId);
+    const before = await s.footprint(storyId);
 
     const error = await s.revert(newest).catch(refusalOf);
 
@@ -381,6 +362,6 @@ describe("owner revert from the activity log", () => {
       message: "ENG-1 priority has changed since; revert the latest change instead",
     });
     expect((await s.issue(storyId)).priority).toBe("high");
-    expect(await footprint(s.t, storyId)).toEqual(before);
+    expect(await s.footprint(storyId)).toEqual(before);
   });
 });

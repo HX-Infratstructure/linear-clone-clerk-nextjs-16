@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { ensureAgent } from "./lib/agents";
 import schema from "./schema";
+import { registerRealTimers } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
+
+registerRealTimers();
 
 const TEST_KEY = "sk_test_mirror";
 const USER_ID = "user_sync";
@@ -77,7 +80,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   vi.unstubAllGlobals();
   delete process.env.CLERK_SECRET_KEY;
 });

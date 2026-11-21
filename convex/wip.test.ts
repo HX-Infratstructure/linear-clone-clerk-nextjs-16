@@ -3,37 +3,22 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import schema from "./schema";
+import { passDoneGate } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 const REFUSED = /^Member already has ENG-1 In Progress; move it to In Review or Done first$/;
 
 async function setup() {
   const t = convexTest(schema, modules);
-  const { teamId, memberId, otherId } = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
+  const { orgId, teamId, memberId, otherId } = await t.run(async (ctx) => {
+    const { orgId, memberId } = await insertOrgMember(ctx);
     const otherId = await ctx.db.insert("users", {
       clerkId: "user_other",
       name: "Other",
       email: "other@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
     });
     await ctx.db.insert("members", { orgId, userId: otherId, role: "member", clerkMembershipId: "mem_other" });
     const teamId = await ctx.db.insert("teams", {
@@ -42,34 +27,14 @@ async function setup() {
       key: "ENG",
       nextIssueNumber: 1,
     });
-    return { teamId, memberId, otherId };
+    return { orgId, teamId, memberId, otherId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
   const story = (title: string, assigneeId?: Id<"users">) =>
     asMember.mutation(api.issues.create, { teamId, title, assigneeId });
   const move = (issueId: Id<"issues">, status: "todo" | "in_progress" | "in_review" | "done") =>
     asMember.mutation(api.issues.update, { issueId, status });
-  return { t, asMember, teamId, memberId, otherId, story, move };
-}
-
-type Setup = Awaited<ReturnType<typeof setup>>;
-
-/** In Review and Done need the Complete testing sub-task done with its proof (P2.4). */
-async function passDoneGate(t: Setup["t"], asMember: Setup["asMember"], storyId: Id<"issues">) {
-  const testing = await t.run(async (ctx) => {
-    const { orgId } = (await ctx.db.get(storyId))!;
-    return (
-      await ctx.db
-        .query("issues")
-        .withIndex("by_org_and_parent", (q) => q.eq("orgId", orgId).eq("parentIssueId", storyId))
-        .collect()
-    ).find((child) => child.testing);
-  });
-  await asMember.mutation(api.issues.setProof, {
-    issueId: testing!._id,
-    proofUrl: "https://ci.example.com/run/1",
-  });
-  await asMember.mutation(api.issues.update, { issueId: testing!._id, status: "done" });
+  return { t, asMember, orgId, teamId, memberId, otherId, story, move };
 }
 
 describe("one story In Progress per person", () => {
@@ -113,7 +78,7 @@ describe("one story In Progress per person", () => {
     ["Done", "done"],
     ["unassigning", "unassign"],
   ] as const)("%s frees the slot", async (_label, release) => {
-    const { t, asMember, memberId, story, move } = await setup();
+    const { t, asMember, orgId, memberId, story, move } = await setup();
     const first = await story("First", memberId);
     const second = await story("Second", memberId);
     await move(first, "in_progress");
@@ -121,7 +86,7 @@ describe("one story In Progress per person", () => {
     if (release === "unassign") {
       await asMember.mutation(api.issues.update, { issueId: first, assigneeId: null });
     } else {
-      await passDoneGate(t, asMember, first);
+      await passDoneGate({ t, asMember, orgId }, first);
       await move(first, release);
     }
 
@@ -138,13 +103,12 @@ describe("one story In Progress per person", () => {
   test.each(["epic", "feature", "subtask"] as const)(
     "a %s in progress is never blocked and never counts",
     async (kind) => {
-      const { t, teamId, memberId, story, move } = await setup();
+      const { t, orgId, teamId, memberId, story, move } = await setup();
       const holder = await story("Holder", memberId);
       await move(holder, "in_progress");
       const other = await t.run(async (ctx) => {
-        const team = await ctx.db.get(teamId);
         return await ctx.db.insert("issues", {
-          orgId: team!.orgId,
+          orgId,
           teamId,
           kind,
           title: `A ${kind}`,

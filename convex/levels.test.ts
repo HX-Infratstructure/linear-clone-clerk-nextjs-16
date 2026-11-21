@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { formatIssueKey } from "../lib/issue-key";
 import { api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import { CASCADE_BUDGET } from "./lib/orgRows";
 import schema from "./schema";
 
@@ -18,8 +19,6 @@ const CASCADE_REFUSAL =
   "This change would move more than 5 issues to another project. Move a smaller part of the tree.";
 const WALK_REFUSAL = "This tree is too large to move in one step. Move a smaller part of it.";
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
 const TEAM_KEY = "HXT";
 
 type Kind = "epic" | "feature" | "story" | "subtask";
@@ -27,22 +26,7 @@ type Kind = "epic" | "feature" | "story" | "subtask";
 async function setup(transactionLimits: { databaseQueries?: number; documentsRead?: number } | boolean = false) {
   const t = convexTest({ schema, modules, transactionLimits });
   const { teamId, projectId } = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+    const { orgId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", {
       orgId,
       name: "Citadel",
@@ -56,7 +40,7 @@ async function setup(transactionLimits: { databaseQueries?: number; documentsRea
     });
     return { teamId, projectId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
 
   const create = (
     kind: Kind,
@@ -324,7 +308,7 @@ describe("issue levels", () => {
     // for children or re-reads each descendant fails. Measured with ctx.meta.getTransactionMetrics() on this fixture
     // (an epic and 402 descendants, 2 KB descriptions): 209 index ranges, 812 documents and 1,949,097 bytes read
     // (convex-test counts each issue in its child query and again in its patch), 806 documents and 1,104,700 bytes
-    // written. Convex allows 4,096 index ranges, 32,000 documents and 16 MiB read, 16,000 documents and 16 MiB written.
+    // written. Convex's own limits are `TRANSACTION_LIMITS` in `./lib/transactionLimits`.
     const { t, asMember, tree, insertOtherProject } = await setup({ databaseQueries: 300 });
     const { epic, feature, story } = await tree();
     const description = "d".repeat(2048);

@@ -3,6 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import { LIST_LIMIT } from "../lib/api-contract";
+import { insertOrgMember, MEMBER_IDENTITY } from "./lib/orgMember.fixture";
 import { CASCADE_BUDGET } from "./lib/orgRows";
 import schema from "./schema";
 
@@ -13,35 +14,11 @@ vi.mock("./lib/orgRows", async (importOriginal) => {
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
-
 describe("projects.create on a free organization", () => {
   test("creates a 3rd project", async () => {
     const t = convexTest(schema, modules);
-    const orgId = await t.run(async (ctx) => {
-      const userId = await ctx.db.insert("users", {
-        clerkId: MEMBER_CLERK_ID,
-        name: "Member",
-        email: "member@example.com",
-      });
-      const orgId = await ctx.db.insert("organizations", {
-        clerkOrgId: ORG_CLAIM,
-        name: "Test Org",
-        slug: "test-org",
-      });
-      await ctx.db.insert("members", {
-        orgId,
-        userId,
-        role: "member",
-        clerkMembershipId: "mem_member",
-      });
-      return orgId;
-    });
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const orgId = await t.run(async (ctx) => (await insertOrgMember(ctx)).orgId);
+    const asMember = t.withIdentity(MEMBER_IDENTITY);
     await asMember.mutation(api.projects.create, { name: "One" });
     await asMember.mutation(api.projects.create, { name: "Two" });
 
@@ -65,22 +42,7 @@ describe("projects.remove", () => {
   test("deletes a project that another organization's epic points at", async () => {
     const t = convexTest(schema, modules);
     const projectId = await t.run(async (ctx) => {
-      const userId = await ctx.db.insert("users", {
-        clerkId: MEMBER_CLERK_ID,
-        name: "Member",
-        email: "member@example.com",
-      });
-      const orgId = await ctx.db.insert("organizations", {
-        clerkOrgId: ORG_CLAIM,
-        name: "Test Org",
-        slug: "test-org",
-      });
-      await ctx.db.insert("members", {
-        orgId,
-        userId,
-        role: "member",
-        clerkMembershipId: "mem_member",
-      });
+      const { orgId, memberId: userId } = await insertOrgMember(ctx);
       const projectId = await ctx.db.insert("projects", {
         orgId,
         name: "Phase 2",
@@ -110,10 +72,7 @@ describe("projects.remove", () => {
       });
       return projectId;
     });
-    const asMember = t.withIdentity({
-      subject: MEMBER_CLERK_ID,
-      org_id: ORG_CLAIM,
-    });
+    const asMember = t.withIdentity(MEMBER_IDENTITY);
 
     await asMember.mutation(api.projects.remove, { projectId });
 
@@ -125,15 +84,13 @@ describe("projects.remove", () => {
 async function setupProject(transactionLimits?: { documentsRead: number }) {
   const t = convexTest({ schema, modules, transactionLimits });
   const ids = await t.run(async (ctx) => {
-    const orgId = await ctx.db.insert("organizations", { clerkOrgId: ORG_CLAIM, name: "Test Org", slug: "test-org" });
-    const userId = await ctx.db.insert("users", { clerkId: MEMBER_CLERK_ID, name: "Member", email: "member@example.com" });
-    await ctx.db.insert("members", { orgId, userId, role: "member", clerkMembershipId: "mem_member" });
+    const { orgId, memberId: userId } = await insertOrgMember(ctx);
     const outsiderId = await ctx.db.insert("users", { clerkId: "user_outsider", name: "Outsider", email: "out@example.com" });
     const teamId = await ctx.db.insert("teams", { orgId, name: "Engineering", key: "ENG", nextIssueNumber: 1 });
     const projectId = await ctx.db.insert("projects", { orgId, name: "Phase 2", status: "planned" });
     return { orgId, userId, outsiderId, teamId, projectId };
   });
-  return { t, member: t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM }), ...ids };
+  return { t, member: t.withIdentity(MEMBER_IDENTITY), ...ids };
 }
 
 type ProjectSetup = Awaited<ReturnType<typeof setupProject>>;

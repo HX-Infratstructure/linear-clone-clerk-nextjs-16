@@ -5,33 +5,16 @@ import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import { LIST_LIMIT, MAX_ATTACHMENT_BYTES } from "../lib/api-contract";
 import { Id } from "./_generated/dataModel";
+import { insertOrgMember, MEMBER_IDENTITY, ORG_CLAIM } from "./lib/orgMember.fixture";
 import schema from "./schema";
 import { refusalOf } from "./test-helpers.fixture";
 
 const modules = import.meta.glob("./**/*.*s");
 
-const ORG_CLAIM = "org_test";
-const MEMBER_CLERK_ID = "user_member";
-
 async function setup() {
   const t = convexTest(schema, modules);
   const { orgId, teamId, memberId } = await t.run(async (ctx) => {
-    const memberId = await ctx.db.insert("users", {
-      clerkId: MEMBER_CLERK_ID,
-      name: "Member",
-      email: "member@example.com",
-    });
-    const orgId = await ctx.db.insert("organizations", {
-      clerkOrgId: ORG_CLAIM,
-      name: "Test Org",
-      slug: "test-org",
-    });
-    await ctx.db.insert("members", {
-      orgId,
-      userId: memberId,
-      role: "member",
-      clerkMembershipId: "mem_member",
-    });
+    const { memberId, orgId } = await insertOrgMember(ctx);
     const teamId = await ctx.db.insert("teams", {
       orgId,
       name: "Citadel",
@@ -40,7 +23,7 @@ async function setup() {
     });
     return { orgId, teamId, memberId };
   });
-  const asMember = t.withIdentity({ subject: MEMBER_CLERK_ID, org_id: ORG_CLAIM });
+  const asMember = t.withIdentity(MEMBER_IDENTITY);
 
   const createIssue = () =>
     asMember.mutation(api.issues.create, { teamId, title: "A story", kind: "story" });

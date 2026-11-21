@@ -1,15 +1,13 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import { EXPIRY_BATCH } from "./lib/idempotency";
+import { registerRealTimers } from "./test-helpers.fixture";
 import { AGENT, registerWorkspaceEnv, workspaceTest, type WorkspaceTest } from "./workspace.fixture";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 registerWorkspaceEnv();
-
-afterEach(() => {
-  vi.useRealTimers();
-});
+registerRealTimers();
 
 const write = (t: WorkspaceTest, method: string, path: string, body: unknown, headers: Record<string, string>) =>
   t.fetch(`/api/v1/issues${path}`, { method, headers: { ...AGENT, ...headers }, body: JSON.stringify(body) });
